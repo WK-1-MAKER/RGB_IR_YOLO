@@ -1,0 +1,10 @@
+train_rgb: data/LLVIP/rgb/train/images
+val_rgb: data/LLVIP/rgb/val/images
+train_ir: data/LLVIP/ir/train/images
+val_ir: data/LLVIP/ir/val/images
+
+# number of classes
+nc: 1
+
+# class names
+names: ['person']
