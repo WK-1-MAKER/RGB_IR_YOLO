@@ -8,3 +8,4 @@ runs/
 1.md
 structure.md
 tests/
+**/__pycache__/**
