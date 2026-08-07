@@ -483,7 +483,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     # Configure
     plots = not opt.evolve  # create plots
     cuda = device.type != 'cpu'
-    init_seeds(2 + rank)
+    init_seeds(effective_seed(getattr(opt, 'seed', 1), rank))
     with open(opt.data) as f:
         data_dict = yaml.safe_load(f)  # data dict
     is_coco = opt.data.endswith('coco.yaml')
@@ -905,13 +905,19 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     return results
 
 
-if __name__ == '__main__':
+def effective_seed(seed, rank):
+    """Return the configured seed with a distinct offset for each DDP rank."""
+    return seed if rank == -1 else seed + rank + 1
+
+
+def parse_opt(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default='yolov8n.pt', help='initial weights path')
     parser.add_argument('--cfg', type=str, default='models/yolov8n-transformerx3.yaml', help='model.yaml path')
     parser.add_argument('--data', type=str, default='data.yaml', help='data.yaml path')
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
     parser.add_argument('--batch-size', type=int, default=8, help='total batch size for all GPUs')
     parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
@@ -940,7 +946,11 @@ if __name__ == '__main__':
     parser.add_argument('--bbox_interval', type=int, default=-1, help='Set bounding-box image logging interval for W&B')
     parser.add_argument('--save_period', type=int, default=-1, help='Log model after every "save_period" epoch')
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
-    opt = parser.parse_args()
+    return parser.parse_args(args)
+
+
+if __name__ == '__main__':
+    opt = parse_opt()
 
     # FQY  Flag for visualizing the paired training imgs
     global_var._init()
