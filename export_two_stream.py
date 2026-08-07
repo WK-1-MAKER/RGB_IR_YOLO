@@ -27,7 +27,7 @@ class ExportInterpolate(nn.Module):
 
 def parse_opt(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--weights", type=str, default="runs/train/exp6/weights/best.pt")
+    parser.add_argument("--weights", type=str, default="runs/train/exp7/weights/best.pt")
     parser.add_argument("--img-size", nargs="+", type=int, default=[640, 640])
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--device", default="0")
