@@ -10,10 +10,69 @@ import torch.nn.functional as F
 sys.path.append(Path(__file__).parent.absolute().__str__())
 
 import models
-from models.experimental import attempt_load
 from utils.activations import Hardswish, SiLU
 from utils.general import check_img_size, check_requirements, file_size, set_logging
 from utils.torch_utils import select_device
+
+
+SUPPORTED_EXPORT_DTYPES = {
+    "fp16": torch.float16,
+    "fp32": torch.float32,
+}
+
+
+def floating_state_dtypes(model):
+    """Return the unique floating-point dtypes used by model parameters/buffers."""
+    tensors = list(model.parameters()) + list(model.buffers())
+    return {tensor.dtype for tensor in tensors if tensor.is_floating_point()}
+
+
+def resolve_export_dtype(model, requested):
+    """Resolve an explicit or checkpoint-derived ONNX export dtype."""
+    if requested in SUPPORTED_EXPORT_DTYPES:
+        return SUPPORTED_EXPORT_DTYPES[requested]
+    if requested != "auto":
+        raise ValueError("unsupported export dtype: %s" % requested)
+
+    dtypes = floating_state_dtypes(model)
+    if not dtypes:
+        raise ValueError("checkpoint has no floating-point parameters or buffers")
+    if len(dtypes) != 1:
+        names = ", ".join(sorted(str(dtype) for dtype in dtypes))
+        raise ValueError(
+            "mixed floating-point dtypes in checkpoint: %s; "
+            "use --dtype fp16 or --dtype fp32" % names
+        )
+
+    dtype = next(iter(dtypes))
+    if dtype not in SUPPORTED_EXPORT_DTYPES.values():
+        raise ValueError(
+            "unsupported checkpoint floating dtype: %s; "
+            "use --dtype fp16 or --dtype fp32" % dtype
+        )
+    return dtype
+
+
+def load_model_for_export(weights, map_location):
+    """Load a checkpoint model without an implicit FP32 cast."""
+    checkpoint = torch.load(weights, map_location=map_location)
+    model = checkpoint["ema"] if checkpoint.get("ema") is not None else checkpoint["model"]
+    model = model.to(map_location)
+    return model.eval()
+
+
+def fuse_model_for_export(model, target_dtype):
+    """Fuse layers in FP32, then restore the requested export dtype."""
+    model = model.float()
+    if hasattr(model, "fuse"):
+        model = model.fuse()
+    return model.to(dtype=target_dtype).eval()
+
+
+def make_export_inputs(batch_size, img_size, device, dtype):
+    """Create dtype-aligned RGB and IR tracing inputs."""
+    img_rgb = torch.zeros(batch_size, 3, *img_size, device=device, dtype=dtype)
+    return img_rgb, torch.zeros_like(img_rgb)
 
 
 class ExportInterpolate(nn.Module):
@@ -33,6 +92,7 @@ def parse_opt(args=None):
     parser.add_argument("--device", default="0")
     parser.add_argument("--dynamic", action="store_true")
     parser.add_argument("--simplify", action="store_true")
+    parser.add_argument("--dtype", choices=["auto", "fp16", "fp32"], default="auto")
     opt = parser.parse_args(args=args)
     opt.img_size *= 2 if len(opt.img_size) == 1 else 1
     return opt
@@ -71,13 +131,14 @@ def export_onnx(opt):
     set_logging()
     t = time.time()
     device = select_device(opt.device)
-    model = attempt_load(opt.weights, map_location=device)
-    model.eval()
+    model = load_model_for_export(opt.weights, map_location=device)
+    target_dtype = resolve_export_dtype(model, opt.dtype)
+    model = fuse_model_for_export(model, target_dtype)
+    print(f"Export dtype: {target_dtype}")
 
     gs = int(max(model.stride))
     opt.img_size = [check_img_size(x, gs) for x in opt.img_size]
-    img_rgb = torch.zeros(opt.batch_size, 3, *opt.img_size).to(device)
-    img_ir = torch.zeros(opt.batch_size, 3, *opt.img_size).to(device)
+    img_rgb, img_ir = make_export_inputs(opt.batch_size, opt.img_size, device, target_dtype)
 
     prepare_model_for_export(model)
 
