@@ -3,7 +3,7 @@ python train.py
 
 # 导出onnx
 python export_two_stream.py \
-    --weights runs/train/transformer-aifi-s/weights/best.pt \
+    --weights uns/train/transformer-aifi-s/weights/best.pt \
     --simplify \
     --dtype auto
 

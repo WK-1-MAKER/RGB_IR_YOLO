@@ -669,7 +669,7 @@ class GPT(nn.Module):
 class AIFIGPT(nn.Module):
     """P5-only two-stream Transformer fusion without pooling or upsampling."""
 
-    def __init__(self, d_model, n_layer=1, h=8, block_exp=4,
+    def __init__(self, d_model, n_layer=8, h=8, block_exp=4,
                  feat_h=20, feat_w=20,
                  embd_pdrop=0.1, attn_pdrop=0.1, resid_pdrop=0.1,
                  pe_temperature=10000.):

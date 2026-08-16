@@ -242,6 +242,10 @@ def train(hyp, opt, device, tb_writer=None):
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
     compute_loss = v8DetectionLoss(model)  # init loss class
+    if getattr(opt, 'init_weight', False) and rank in [-1, 0]:
+        save_checkpoint(save_dir / 'weights' / 'init.pt', model, ema, optimizer, epoch=-1,
+                        best_fitness=0.0, training_results='',
+                        wandb_id=wandb_logger.wandb_run.id if wandb_logger.wandb else None)
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
@@ -671,6 +675,10 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
     compute_loss = v8DetectionLoss(model)  # init loss class
+    if getattr(opt, 'init_weight', False) and rank in [-1, 0]:
+        save_checkpoint(save_dir / 'weights' / 'init.pt', model, ema, optimizer, epoch=-1,
+                        best_fitness=0.0, training_results='',
+                        wandb_id=wandb_logger.wandb_run.id if wandb_logger.wandb else None)
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
@@ -910,10 +918,28 @@ def effective_seed(seed, rank):
     return seed if rank == -1 else seed + rank + 1
 
 
+def save_checkpoint(path, model, ema, optimizer, epoch, best_fitness, training_results='', wandb_id=None):
+    """Save a training checkpoint using the same structure as regular epoch checkpoints."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint = {
+        'epoch': epoch,
+        'best_fitness': best_fitness,
+        'training_results': training_results,
+        'model': deepcopy(model.module if is_parallel(model) else model).half(),
+        'ema': deepcopy(ema.ema).half() if ema else None,
+        'updates': ema.updates if ema else 0,
+        'optimizer': optimizer.state_dict(),
+        'wandb_id': wandb_id,
+    }
+    torch.save(checkpoint, path)
+
+
 def parse_opt(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default='yolov8n.pt', help='initial weights path')
-    parser.add_argument('--cfg', type=str, default='models/yolov8n-transformerx3.yaml', help='model.yaml path')
+    parser.add_argument('--init-weight', action='store_true', default=True, help='save initialized model before training')
+    parser.add_argument('--cfg', type=str, default='config/yolov8n-transformerx3.yaml', help='model.yaml path')
     parser.add_argument('--data', type=str, default='data.yaml', help='data.yaml path')
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=20)
