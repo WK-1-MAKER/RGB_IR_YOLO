@@ -667,17 +667,19 @@ class GPT(nn.Module):
 
 
 class AIFIGPT(nn.Module):
-    """P5-only two-stream Transformer fusion without pooling or upsampling."""
+    """P5-only two-stream Transformer fusion with optional 8x8 pooling."""
 
-    def __init__(self, d_model, n_layer=8, h=8, block_exp=4,
+    def __init__(self, d_model, n_layer=8, is_avgpool=False, h=8, block_exp=4,
                  feat_h=20, feat_w=20,
                  embd_pdrop=0.1, attn_pdrop=0.1, resid_pdrop=0.1,
                  pe_temperature=10000.):
         super().__init__()
         self.n_embd = d_model
+        self.is_avgpool = is_avgpool
         self.feat_h = feat_h
         self.feat_w = feat_w
         self.pe_temperature = pe_temperature
+        self.avgpool = nn.AdaptiveAvgPool2d((8, 8))
 
         d_k = d_model
         d_v = d_model
@@ -742,16 +744,30 @@ class AIFIGPT(nn.Module):
         if c != self.n_embd:
             raise ValueError(f"AIFIGPT expected {self.n_embd} channels, got {c}.")
 
+        if self.is_avgpool:
+            rgb_fea = self.avgpool(rgb_fea)
+            ir_fea = self.avgpool(ir_fea)
+
+        feat_h, feat_w = rgb_fea.shape[-2:]
+
         rgb_tokens = rgb_fea.reshape(bs, c, -1).permute(0, 2, 1).contiguous()
         ir_tokens = ir_fea.reshape(bs, c, -1).permute(0, 2, 1).contiguous()
         token_embeddings = torch.cat([rgb_tokens, ir_tokens], dim=1)
-        pos_embeddings = self._build_position_embedding(h, w, rgb_fea.device, rgb_fea.dtype)
+        pos_embeddings = self._build_position_embedding(
+            feat_h, feat_w, rgb_fea.device, rgb_fea.dtype
+        )
 
         x = self.drop(pos_embeddings + token_embeddings)
         x = self.trans_blocks(x)
         x = self.ln_f(x)
 
-        x = x.view(bs, 2, h, w, self.n_embd)
+        x = x.view(bs, 2, feat_h, feat_w, self.n_embd)
         x = x.permute(0, 1, 4, 2, 3)
 
-        return x[:, 0].contiguous(), x[:, 1].contiguous()
+        rgb_fea_out = x[:, 0].contiguous()
+        ir_fea_out = x[:, 1].contiguous()
+        if self.is_avgpool:
+            rgb_fea_out = F.interpolate(rgb_fea_out, size=(h, w), mode="bilinear")
+            ir_fea_out = F.interpolate(ir_fea_out, size=(h, w), mode="bilinear")
+
+        return rgb_fea_out, ir_fea_out

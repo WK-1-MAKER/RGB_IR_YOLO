@@ -123,6 +123,8 @@ def prepare_model_for_export(model):
                 module.act = SiLU()
         elif isinstance(module, models.common.GPT):
             module.avgpool = ExportInterpolate((module.vert_anchors, module.horz_anchors))
+        elif isinstance(module, models.common.AIFIGPT) and module.is_avgpool:
+            module.avgpool = ExportInterpolate((8, 8))
     model.model[-1].export = True
     model.model[-1].format = "onnx"
 
