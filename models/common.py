@@ -20,6 +20,7 @@ from utils.plots import colors, plot_one_box
 from utils.torch_utils import time_synchronized
 
 from torch.nn import init, Sequential
+from ultralytics.nn.modules.transformer import MSDeformAttn
 
 
 def autopad(k, p=None):  # kernel, padding
@@ -249,6 +250,23 @@ class Add2(nn.Module):
         # return torch.add(x[0], x[1])
 
 
+class Select(nn.Module):
+    """Select one stream from a two-stream fusion output without arithmetic."""
+
+    def __init__(self, index):
+        super().__init__()
+        if not isinstance(index, int) or index not in (0, 1):
+            raise ValueError(f"Select index must be 0 or 1, but got {index!r}")
+        self.index = index
+
+    def forward(self, x):
+        if not isinstance(x, (list, tuple)):
+            raise ValueError("Select expects a list or tuple fusion output.")
+        if len(x) <= self.index:
+            raise ValueError(f"Select index {self.index} is out of range for output length {len(x)}.")
+        return x[self.index]
+
+
 class AIFIConv(nn.Module):
     """Lightweight two-stream fusion: concat, 1x1 conv, split into two residual deltas."""
 
@@ -268,6 +286,95 @@ class AIFIConv(nn.Module):
             )
         fused = self.cv(torch.cat([rgb_fea, ir_fea], dim=1))
         return fused.chunk(2, dim=1)
+
+
+class _MSDeformAttnFusionLayer(nn.Module):
+    """Pre-norm Transformer layer with shared RGB/IR deformable attention."""
+
+    def __init__(self, c1, n_heads, n_points, block_exp=4, resid_pdrop=0.1):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(c1)
+        self.msda = MSDeformAttn(c1, n_levels=2, n_heads=n_heads, n_points=n_points)
+        self.attn_resid_drop = nn.Dropout(resid_pdrop)
+        self.norm2 = nn.LayerNorm(c1)
+        self.mlp = nn.Sequential(
+            nn.Linear(c1, block_exp * c1),
+            nn.GELU(),
+            nn.Linear(block_exp * c1, c1),
+            nn.Dropout(resid_pdrop),
+        )
+
+    def forward(self, x, reference_points, value_shapes):
+        attn_input = self.norm1(x)
+        x = x + self.attn_resid_drop(self.msda(attn_input, reference_points, attn_input, value_shapes))
+        return x + self.mlp(self.norm2(x))
+
+
+class MSDeformAttnFusion(nn.Module):
+    """Aligned RGB/IR MSDA Transformer fusion returning updated feature maps."""
+
+    def __init__(self, c1, n_layer=1, n_heads=8, n_points=4,
+                 block_exp=4, embd_pdrop=0.1, resid_pdrop=0.1):
+        super().__init__()
+        if c1 <= 0:
+            raise ValueError(f"c1 must be positive, but got {c1}")
+        if n_heads <= 0 or c1 % n_heads != 0:
+            raise ValueError(f"c1 must be divisible by positive n_heads, but got {c1} and {n_heads}")
+        if n_points <= 0 or n_layer <= 0 or block_exp <= 0:
+            raise ValueError("n_points, n_layer, and block_exp must be positive")
+
+        self.c1 = c1
+        self.n_heads = n_heads
+        self.n_points = n_points
+        self.n_layer = n_layer
+        self.coord_proj = nn.Linear(2, c1)
+        self.embd_drop = nn.Dropout(embd_pdrop)
+        self.layers = nn.ModuleList([
+            _MSDeformAttnFusionLayer(c1, n_heads, n_points, block_exp, resid_pdrop)
+            for _ in range(n_layer)
+        ])
+        self.final_norm = nn.LayerNorm(c1)
+
+    @staticmethod
+    def _token_coordinates(h, w, device, dtype):
+        rows = (torch.arange(h, device=device, dtype=dtype) + 0.5) / h
+        cols = (torch.arange(w, device=device, dtype=dtype) + 0.5) / w
+        yy, xx = torch.meshgrid(rows, cols, indexing='ij')
+        return torch.stack((xx, yy), dim=-1).reshape(1, h * w, 2)
+
+    def forward(self, x):
+        if not isinstance(x, (list, tuple)) or len(x) != 2:
+            raise ValueError("MSDeformAttnFusion expects [rgb_fea, ir_fea].")
+        rgb_fea, ir_fea = x
+        if not isinstance(rgb_fea, torch.Tensor) or not isinstance(ir_fea, torch.Tensor):
+            raise ValueError("MSDeformAttnFusion expects tensor RGB and IR features.")
+        if rgb_fea.ndim != 4 or ir_fea.ndim != 4:
+            raise ValueError("MSDeformAttnFusion expects 4-D BCHW feature maps.")
+        if rgb_fea.shape != ir_fea.shape:
+            raise ValueError(
+                f"MSDeformAttnFusion expects RGB and IR features with the same shape, "
+                f"got {tuple(rgb_fea.shape)} and {tuple(ir_fea.shape)}."
+            )
+
+        bs, c, h, w = rgb_fea.shape
+        if c != self.c1:
+            raise ValueError(f"MSDeformAttnFusion expected {self.c1} channels, got {c}.")
+
+        rgb_tokens = rgb_fea.flatten(2).transpose(1, 2).contiguous()
+        ir_tokens = ir_fea.flatten(2).transpose(1, 2).contiguous()
+        coords = self._token_coordinates(h, w, rgb_fea.device, rgb_fea.dtype).expand(bs, -1, -1)
+        x = torch.cat((rgb_tokens, ir_tokens), dim=1)
+        query_coords = coords.repeat(1, 2, 1)
+        x = self.embd_drop(x + self.coord_proj(query_coords))
+        value_shapes = [(h, w), (h, w)]
+        reference_points = query_coords.unsqueeze(2).expand(-1, -1, 2, -1)
+        for layer in self.layers:
+            x = layer(x, reference_points, value_shapes)
+
+        x = self.final_norm(x)
+        rgb_out = x[:, :h * w].transpose(1, 2).reshape(bs, c, h, w).contiguous()
+        ir_out = x[:, h * w:].transpose(1, 2).reshape(bs, c, h, w).contiguous()
+        return rgb_out, ir_out
 
 
 

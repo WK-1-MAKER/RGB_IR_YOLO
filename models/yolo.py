@@ -292,6 +292,11 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         elif m is Add2:
             c2 = ch[f[0]]
             args = [c2, args[1]]
+        elif m is Select:
+            if not isinstance(f, int):
+                raise ValueError(f'Select expects one fusion-output layer index, but got {f}')
+            c2 = ch[f]
+            args = [args[0]]
         elif m is AIFIConv:
             c2 = ch[f[0]]
             args = [c2]
@@ -299,6 +304,15 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f[0]]
             args = [c2]
         elif m is AIFIGPT:
+            c2 = ch[f[0]]
+            args = [c2, *args[1:]]
+        elif m is MSDeformAttnFusion:
+            if not isinstance(f, list) or len(f) != 2:
+                raise ValueError(f'MSDeformAttnFusion expects two feature-layer indices, but got {f}')
+            if ch[f[0]] != ch[f[1]]:
+                raise ValueError(
+                    f'MSDeformAttnFusion expects equal input channels, but got {ch[f[0]]} and {ch[f[1]]}'
+                )
             c2 = ch[f[0]]
             args = [c2, *args[1:]]
         else:

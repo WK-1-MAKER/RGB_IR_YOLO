@@ -299,7 +299,7 @@ def test(data,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='test.py')
     parser.add_argument('--weights', nargs='+', type=str,
-                        default=r'runs\transformer_LLVIP\weights\best.pt', help='model.pt path(s)')
+                        default='runs/train/exp2/weights/best.pt', help='model.pt path(s)')
     parser.add_argument('--data', type=str, default='data.yaml', help='*.data path')
     parser.add_argument('--batch-size', type=int, default=16, help='size of each image batch')
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
@@ -310,7 +310,7 @@ if __name__ == '__main__':
     parser.add_argument('--single-cls', action='store_true', help='treat as single-class dataset')
     parser.add_argument('--augment', default=False, action='store_true', help='augmented inference')
     parser.add_argument('--verbose', action='store_true', help='report mAP by class')
-    parser.add_argument('--save-txt', default=True, action='store_true', help='save results to *.txt')
+    parser.add_argument('--save-txt', default=False, action='store_true', help='save results to *.txt')
     parser.add_argument('--save-hybrid', action='store_true', help='save label+prediction hybrid results to *.txt')
     parser.add_argument('--save-conf', default=True, action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-json', action='store_true', help='save a cocoapi-compatible JSON results file')
