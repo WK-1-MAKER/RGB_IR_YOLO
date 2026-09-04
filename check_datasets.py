@@ -12,10 +12,10 @@ import cv2
 
 
 DEFAULT_IMAGE_DIR = Path(
-    "/home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/ir/trainir/images"
+    "/home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/rgb/train/images"
 )
 DEFAULT_LABEL_DIR = Path(
-    "/home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/ir/trainir/labels"
+    "/home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/rgb/train/labels"
 )
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 

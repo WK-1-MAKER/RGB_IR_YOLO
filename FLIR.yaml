@@ -3,6 +3,8 @@ train_rgb: /home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/rgb/train/images
 val_rgb: /home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/rgb/val/images
 train_ir: /home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/ir/trainir/images
 val_ir: /home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/ir/valir/images
+test_rgb: /home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/rgb/test/images
+test_ir: /home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/ir/testir/images
 
 # number of classes
 nc: 3

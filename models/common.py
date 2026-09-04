@@ -273,7 +273,7 @@ class AIFIConv(nn.Module):
     def __init__(self, c1):
         super().__init__()
         self.c1 = c1
-        self.cv = Conv(c1 * 2, c1 * 2, 1, 1)
+        self.cv = Conv(c1 * 2, c1 * 2, 3, 1)
 
     def forward(self, x):
         if not isinstance(x, (list, tuple)) or len(x) != 2:
@@ -286,6 +286,14 @@ class AIFIConv(nn.Module):
             )
         fused = self.cv(torch.cat([rgb_fea, ir_fea], dim=1))
         return fused.chunk(2, dim=1)
+
+
+def _normalized_token_center_coordinates(h, w, device, dtype):
+    """Return row-major normalized (x, y) center coordinates for an HxW feature map."""
+    rows = (torch.arange(h, device=device, dtype=dtype) + 0.5) / h
+    cols = (torch.arange(w, device=device, dtype=dtype) + 0.5) / w
+    yy, xx = torch.meshgrid(rows, cols, indexing="ij")
+    return torch.stack((xx, yy), dim=-1).reshape(1, h * w, 2)
 
 
 class _MSDeformAttnFusionLayer(nn.Module):
@@ -328,19 +336,13 @@ class MSDeformAttnFusion(nn.Module):
         self.n_points = n_points
         self.n_layer = n_layer
         self.coord_proj = nn.Linear(2, c1)
+        self.modal_emb = nn.Parameter(torch.zeros(1, 2, c1))
         self.embd_drop = nn.Dropout(embd_pdrop)
         self.layers = nn.ModuleList([
             _MSDeformAttnFusionLayer(c1, n_heads, n_points, block_exp, resid_pdrop)
             for _ in range(n_layer)
         ])
         self.final_norm = nn.LayerNorm(c1)
-
-    @staticmethod
-    def _token_coordinates(h, w, device, dtype):
-        rows = (torch.arange(h, device=device, dtype=dtype) + 0.5) / h
-        cols = (torch.arange(w, device=device, dtype=dtype) + 0.5) / w
-        yy, xx = torch.meshgrid(rows, cols, indexing='ij')
-        return torch.stack((xx, yy), dim=-1).reshape(1, h * w, 2)
 
     def forward(self, x):
         if not isinstance(x, (list, tuple)) or len(x) != 2:
@@ -362,10 +364,15 @@ class MSDeformAttnFusion(nn.Module):
 
         rgb_tokens = rgb_fea.flatten(2).transpose(1, 2).contiguous()
         ir_tokens = ir_fea.flatten(2).transpose(1, 2).contiguous()
-        coords = self._token_coordinates(h, w, rgb_fea.device, rgb_fea.dtype).expand(bs, -1, -1)
+        coords = _normalized_token_center_coordinates(
+            h, w, rgb_fea.device, rgb_fea.dtype
+        ).expand(bs, -1, -1)
+        spatial_pos = self.coord_proj(coords)
+        rgb_tokens = rgb_tokens + spatial_pos + self.modal_emb[:, 0:1].to(dtype=rgb_fea.dtype)
+        ir_tokens = ir_tokens + spatial_pos + self.modal_emb[:, 1:2].to(dtype=ir_fea.dtype)
         x = torch.cat((rgb_tokens, ir_tokens), dim=1)
         query_coords = coords.repeat(1, 2, 1)
-        x = self.embd_drop(x + self.coord_proj(query_coords))
+        x = self.embd_drop(x)
         value_shapes = [(h, w), (h, w)]
         reference_points = query_coords.unsqueeze(2).expand(-1, -1, 2, -1)
         for layer in self.layers:
@@ -785,7 +792,7 @@ class AIFIGPT(nn.Module):
         self.is_avgpool = is_avgpool
         self.feat_h = feat_h
         self.feat_w = feat_w
-        self.pe_temperature = pe_temperature
+        self.coord_proj = nn.Linear(2, self.n_embd)
         self.avgpool = nn.AdaptiveAvgPool2d((8, 8))
 
         d_k = d_model
@@ -811,31 +818,6 @@ class AIFIGPT(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
-    @staticmethod
-    def build_2d_sincos_position_embedding(w, h, embed_dim=256, temperature=10000.):
-        grid_h = torch.arange(int(h), dtype=torch.float32)
-        grid_w = torch.arange(int(w), dtype=torch.float32)
-        grid_h, grid_w = torch.meshgrid(grid_h, grid_w, indexing='ij')
-        if embed_dim % 4 != 0:
-            raise ValueError("AIFIGPT sin-cos position embedding requires channels divisible by 4.")
-
-        pos_dim = embed_dim // 4
-        omega = torch.arange(pos_dim, dtype=torch.float32) / pos_dim
-        omega = 1. / (temperature ** omega)
-
-        out_w = grid_w.flatten()[..., None] @ omega[None]
-        out_h = grid_h.flatten()[..., None] @ omega[None]
-
-        return torch.cat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)[None]
-
-    def _build_position_embedding(self, h, w, device, dtype):
-        spatial_pos = self.build_2d_sincos_position_embedding(
-            w, h, self.n_embd, self.pe_temperature
-        ).to(device=device, dtype=dtype)
-        rgb_pos = spatial_pos + self.modal_emb[:, 0:1, :].to(dtype=dtype)
-        ir_pos = spatial_pos + self.modal_emb[:, 1:2, :].to(dtype=dtype)
-        return torch.cat([rgb_pos, ir_pos], dim=1)
-
     def forward(self, x):
         if not isinstance(x, (list, tuple)) or len(x) != 2:
             raise ValueError("AIFIGPT expects [rgb_fea, ir_fea].")
@@ -859,12 +841,15 @@ class AIFIGPT(nn.Module):
 
         rgb_tokens = rgb_fea.reshape(bs, c, -1).permute(0, 2, 1).contiguous()
         ir_tokens = ir_fea.reshape(bs, c, -1).permute(0, 2, 1).contiguous()
-        token_embeddings = torch.cat([rgb_tokens, ir_tokens], dim=1)
-        pos_embeddings = self._build_position_embedding(
+        coords = _normalized_token_center_coordinates(
             feat_h, feat_w, rgb_fea.device, rgb_fea.dtype
-        )
+        ).expand(bs, -1, -1)
+        spatial_pos = self.coord_proj(coords)
+        rgb_tokens = rgb_tokens + spatial_pos + self.modal_emb[:, 0:1].to(dtype=rgb_fea.dtype)
+        ir_tokens = ir_tokens + spatial_pos + self.modal_emb[:, 1:2].to(dtype=ir_fea.dtype)
+        token_embeddings = torch.cat((rgb_tokens, ir_tokens), dim=1)
 
-        x = self.drop(pos_embeddings + token_embeddings)
+        x = self.drop(token_embeddings)
         x = self.trans_blocks(x)
         x = self.ln_f(x)
 
