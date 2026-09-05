@@ -863,3 +863,144 @@ class AIFIGPT(nn.Module):
             ir_fea_out = F.interpolate(ir_fea_out, size=(h, w), mode="bilinear")
 
         return rgb_fea_out, ir_fea_out
+
+
+class _CrossModalDecoderLayer(nn.Module):
+    """Pre-norm self/cross-attention layer for two aligned feature streams."""
+
+    def __init__(self, c1, n_heads, n_points, block_exp=2,
+                 attn_pdrop=0.1, resid_pdrop=0.1):
+        super().__init__()
+        self.self_norm = nn.LayerNorm(c1)
+        self.self_attn = SelfAttention(c1, c1, c1, n_heads, attn_pdrop, resid_pdrop)
+        self.cross_norm = nn.LayerNorm(c1)
+        self.rgb_from_ir_attn = MSDeformAttn(
+            c1, n_levels=1, n_heads=n_heads, n_points=n_points
+        )
+        self.ir_from_rgb_attn = MSDeformAttn(
+            c1, n_levels=1, n_heads=n_heads, n_points=n_points
+        )
+        self.cross_resid_drop = nn.Dropout(resid_pdrop)
+        self.ffn_norm = nn.LayerNorm(c1)
+        self.ffn = nn.Sequential(
+            nn.Linear(c1, block_exp * c1),
+            nn.GELU(),
+            nn.Linear(block_exp * c1, c1),
+            nn.Dropout(resid_pdrop),
+        )
+
+    def forward(self, rgb, ir, reference_points, value_shapes):
+        rgb = rgb + self.self_attn(self.self_norm(rgb))
+        ir = ir + self.self_attn(self.self_norm(ir))
+
+        rgb_cross = self.cross_norm(rgb)
+        ir_cross = self.cross_norm(ir)
+        rgb_delta = self.rgb_from_ir_attn(
+            rgb_cross, reference_points, ir_cross, value_shapes
+        )
+        ir_delta = self.ir_from_rgb_attn(
+            ir_cross, reference_points, rgb_cross, value_shapes
+        )
+        rgb = rgb + self.cross_resid_drop(rgb_delta)
+        ir = ir + self.cross_resid_drop(ir_delta)
+
+        rgb = rgb + self.ffn(self.ffn_norm(rgb))
+        ir = ir + self.ffn(self.ffn_norm(ir))
+        return rgb, ir
+
+
+class CrossModalDecoder(nn.Module):
+    """Two-stream fusion with shared self-attention and bidirectional cross-attention."""
+
+    def __init__(self, c1, n_layer=1, n_heads=8, n_points=4,
+                 block_exp=2, embd_pdrop=0.1, attn_pdrop=0.1,
+                 resid_pdrop=0.1):
+        super().__init__()
+        integer_args = {
+            "c1": c1,
+            "n_layer": n_layer,
+            "n_heads": n_heads,
+            "n_points": n_points,
+            "block_exp": block_exp,
+        }
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in integer_args.values()):
+            raise ValueError(
+                "CrossModalDecoder expects integer c1, n_layer, n_heads, n_points, and block_exp, "
+                f"got {integer_args}."
+            )
+        if c1 <= 0:
+            raise ValueError(f"c1 must be positive, but got {c1}")
+        if n_heads <= 0 or c1 % n_heads != 0:
+            raise ValueError(
+                f"c1 must be divisible by positive n_heads, but got {c1} and {n_heads}"
+            )
+        if n_points <= 0 or n_layer <= 0 or block_exp <= 0:
+            raise ValueError("n_points, n_layer, and block_exp must be positive")
+
+        self.c1 = c1
+        self.n_heads = n_heads
+        self.n_points = n_points
+        self.n_layer = n_layer
+        self.coord_proj = nn.Linear(2, c1)
+        self.modal_emb = nn.Parameter(torch.zeros(1, 2, c1))
+        self.embd_drop = nn.Dropout(embd_pdrop)
+        self.layers = nn.ModuleList([
+            _CrossModalDecoderLayer(
+                c1, n_heads, n_points, block_exp, attn_pdrop, resid_pdrop
+            )
+            for _ in range(n_layer)
+        ])
+        self.final_norm = nn.LayerNorm(c1)
+
+    def forward(self, x):
+        if not isinstance(x, (list, tuple)) or len(x) != 2:
+            raise ValueError("CrossModalDecoder expects [rgb_fea, ir_fea].")
+        rgb_fea, ir_fea = x
+        if not isinstance(rgb_fea, torch.Tensor) or not isinstance(ir_fea, torch.Tensor):
+            raise ValueError(
+                "CrossModalDecoder expects tensor RGB and IR features, "
+                f"got {type(rgb_fea).__name__} and {type(ir_fea).__name__}."
+            )
+        if rgb_fea.ndim != 4 or ir_fea.ndim != 4:
+            raise ValueError(
+                "CrossModalDecoder expects 4-D BCHW feature maps, "
+                f"got {rgb_fea.ndim}-D and {ir_fea.ndim}-D."
+            )
+        if rgb_fea.shape != ir_fea.shape:
+            raise ValueError(
+                "CrossModalDecoder expects RGB and IR features with the same shape, "
+                f"got {tuple(rgb_fea.shape)} and {tuple(ir_fea.shape)}."
+            )
+        if rgb_fea.device != ir_fea.device or rgb_fea.dtype != ir_fea.dtype:
+            raise ValueError(
+                "CrossModalDecoder expects RGB and IR features with the same device and dtype, "
+                f"got ({rgb_fea.device}, {rgb_fea.dtype}) and ({ir_fea.device}, {ir_fea.dtype})."
+            )
+
+        bs, c, h, w = rgb_fea.shape
+        if c != self.c1:
+            raise ValueError(f"CrossModalDecoder expected {self.c1} channels, got {c}.")
+
+        rgb = rgb_fea.flatten(2).transpose(1, 2).contiguous()
+        ir = ir_fea.flatten(2).transpose(1, 2).contiguous()
+        coords = _normalized_token_center_coordinates(
+            h, w, rgb_fea.device, rgb_fea.dtype
+        ).expand(bs, -1, -1)
+        spatial_pos = self.coord_proj(coords)
+        rgb = self.embd_drop(
+            rgb + spatial_pos + self.modal_emb[:, 0:1].to(dtype=rgb_fea.dtype)
+        )
+        ir = self.embd_drop(
+            ir + spatial_pos + self.modal_emb[:, 1:2].to(dtype=ir_fea.dtype)
+        )
+
+        value_shapes = [(h, w)]
+        reference_points = coords.unsqueeze(2)
+        for layer in self.layers:
+            rgb, ir = layer(rgb, ir, reference_points, value_shapes)
+
+        rgb = self.final_norm(rgb)
+        ir = self.final_norm(ir)
+        rgb_out = rgb.transpose(1, 2).reshape(bs, c, h, w).contiguous()
+        ir_out = ir.transpose(1, 2).reshape(bs, c, h, w).contiguous()
+        return rgb_out, ir_out

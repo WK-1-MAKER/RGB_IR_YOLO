@@ -937,9 +937,9 @@ def save_checkpoint(path, model, ema, optimizer, epoch, best_fitness, training_r
 
 def parse_opt(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', type=str, default='yolov8n.pt', help='initial weights path')
+    parser.add_argument('--weights', type=str, default='yolov8s.pt', help='initial weights path')
     parser.add_argument('--init-weight', action='store_true', default=False, help='save initialized model before training')
-    parser.add_argument('--cfg', type=str, default='config/yolov8s-msda-noaificonv.yaml', help='model.yaml path')
+    parser.add_argument('--cfg', type=str, default='config/yolov8s-crossmodaldecoder.yaml', help='model.yaml path')
     parser.add_argument('--data', type=str, default='FLIR.yaml', help='data.yaml path')
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=40)

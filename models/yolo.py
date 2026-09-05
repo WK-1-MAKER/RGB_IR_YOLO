@@ -315,6 +315,16 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                 )
             c2 = ch[f[0]]
             args = [c2, *args[1:]]
+        elif m is CrossModalDecoder:
+            if not isinstance(f, list) or len(f) != 2:
+                raise ValueError(f'CrossModalDecoder expects two feature-layer indices, but got {f}')
+            if ch[f[0]] != ch[f[1]]:
+                raise ValueError(
+                    f'CrossModalDecoder expects equal input channels, but got '
+                    f'{ch[f[0]]} and {ch[f[1]]}'
+                )
+            c2 = ch[f[0]]
+            args = [c2, *args[1:]]
         else:
             c2 = ch[f]
 
