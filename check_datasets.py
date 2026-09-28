@@ -12,7 +12,7 @@ import cv2
 
 
 DEFAULT_IMAGE_DIR = Path(
-    "/home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/rgb/train/images"
+    "/home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/ir/trainir/images"
 )
 DEFAULT_LABEL_DIR = Path(
     "/home/SENSETIME/wenkai/slam_datasets/FLIR/FLIR/rgb/train/labels"

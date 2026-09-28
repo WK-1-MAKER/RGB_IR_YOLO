@@ -944,7 +944,7 @@ def parse_opt(args=None):
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=40)
     parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
-    parser.add_argument('--batch-size', type=int, default=12, help='total batch size for all GPUs')
+    parser.add_argument('--batch-size', type=int, default=8, help='total batch size for all GPUs')
     parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')

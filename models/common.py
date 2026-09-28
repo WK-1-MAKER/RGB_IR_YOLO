@@ -273,7 +273,7 @@ class AIFIConv(nn.Module):
     def __init__(self, c1):
         super().__init__()
         self.c1 = c1
-        self.cv = Conv(c1 * 2, c1 * 2, 3, 1)
+        self.cv = Conv(c1 * 2, c1, 1, 1)
 
     def forward(self, x):
         if not isinstance(x, (list, tuple)) or len(x) != 2:
@@ -285,7 +285,7 @@ class AIFIConv(nn.Module):
                 f"got {tuple(rgb_fea.shape)} and {tuple(ir_fea.shape)}."
             )
         fused = self.cv(torch.cat([rgb_fea, ir_fea], dim=1))
-        return fused.chunk(2, dim=1)
+        return fused
 
 
 def _normalized_token_center_coordinates(h, w, device, dtype):
