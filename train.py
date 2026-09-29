@@ -61,6 +61,7 @@ def train(hyp, opt, device, tb_writer=None):
     # Configure
     plots = not opt.evolve  # create plots
     cuda = device.type != 'cpu'
+    amp_enabled = cuda and opt.amp
     init_seeds(2 + rank)
     with open(opt.data) as f:
         data_dict = yaml.safe_load(f)  # data dict
@@ -240,12 +241,13 @@ def train(hyp, opt, device, tb_writer=None):
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = amp.GradScaler(enabled=cuda)
+    scaler = amp.GradScaler(enabled=amp_enabled)
     compute_loss = v8DetectionLoss(model)  # init loss class
     if getattr(opt, 'init_weight', False) and rank in [-1, 0]:
         save_checkpoint(save_dir / 'weights' / 'init.pt', model, ema, optimizer, epoch=-1,
                         best_fitness=0.0, training_results='',
-                        wandb_id=wandb_logger.wandb_run.id if wandb_logger.wandb else None)
+                        wandb_id=wandb_logger.wandb_run.id if wandb_logger.wandb else None,
+                        amp_enabled=amp_enabled)
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
@@ -307,7 +309,7 @@ def train(hyp, opt, device, tb_writer=None):
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
             # Forward
-            with amp.autocast(enabled=cuda):
+            with amp.autocast(enabled=amp_enabled):
                 pred = model(imgs)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if rank != -1:
@@ -374,6 +376,7 @@ def train(hyp, opt, device, tb_writer=None):
                                                  plots=plots and final_epoch,
                                                  wandb_logger=wandb_logger,
                                                  compute_loss=compute_loss,
+                                                 half_precision=amp_enabled,
                                                  is_coco=is_coco)
 
             # Write
@@ -405,8 +408,8 @@ def train(hyp, opt, device, tb_writer=None):
                 ckpt = {'epoch': epoch,
                         'best_fitness': best_fitness,
                         'training_results': results_file.read_text(),
-                        'model': deepcopy(model.module if is_parallel(model) else model).half(),
-                        'ema': deepcopy(ema.ema).half(),
+                        'model': deepcopy(model.module if is_parallel(model) else model).half() if amp_enabled else deepcopy(model.module if is_parallel(model) else model),
+                        'ema': deepcopy(ema.ema).half() if amp_enabled else deepcopy(ema.ema),
                         'updates': ema.updates,
                         'optimizer': optimizer.state_dict(),
                         'wandb_id': wandb_logger.wandb_run.id if wandb_logger.wandb else None}
@@ -440,11 +443,12 @@ def train(hyp, opt, device, tb_writer=None):
                                           imgsz=imgsz_test,
                                           conf_thres=0.001,
                                           iou_thres=0.7,
-                                          model=attempt_load(m, device).half(),
+                                          model=attempt_load(m, device).half() if amp_enabled else attempt_load(m, device),
                                           single_cls=opt.single_cls,
                                           dataloader=testloader,
                                           save_dir=save_dir,
                                           save_json=True,
+                                          half_precision=amp_enabled,
                                           plots=False,
                                           is_coco=is_coco)
 
@@ -452,7 +456,7 @@ def train(hyp, opt, device, tb_writer=None):
         final = best if best.exists() else last  # final model
         for f in last, best:
             if f.exists():
-                strip_optimizer(f)  # strip optimizers
+                strip_optimizer(f, half=amp_enabled)  # strip optimizers
         if opt.bucket:
             os.system(f'gsutil cp {final} gs://{opt.bucket}/weights')  # upload
         if wandb_logger.wandb and not opt.evolve:  # Log the stripped model
@@ -487,6 +491,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     # Configure
     plots = not opt.evolve  # create plots
     cuda = device.type != 'cpu'
+    amp_enabled = cuda and opt.amp
     init_seeds(effective_seed(getattr(opt, 'seed', 1), rank))
     with open(opt.data) as f:
         data_dict = yaml.safe_load(f)  # data dict
@@ -673,12 +678,13 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = amp.GradScaler(enabled=cuda)
+    scaler = amp.GradScaler(enabled=amp_enabled)
     compute_loss = v8DetectionLoss(model)  # init loss class
     if getattr(opt, 'init_weight', False) and rank in [-1, 0]:
         save_checkpoint(save_dir / 'weights' / 'init.pt', model, ema, optimizer, epoch=-1,
                         best_fitness=0.0, training_results='',
-                        wandb_id=wandb_logger.wandb_run.id if wandb_logger.wandb else None)
+                        wandb_id=wandb_logger.wandb_run.id if wandb_logger.wandb else None,
+                        amp_enabled=amp_enabled)
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
@@ -753,7 +759,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
             # Forward
-            with amp.autocast(enabled=cuda):
+            with amp.autocast(enabled=amp_enabled):
                 # pred = model(imgs)  # forward
                 pred = model(imgs_rgb, imgs_ir)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
@@ -821,6 +827,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                                                  plots=plots and final_epoch,
                                                  wandb_logger=wandb_logger,
                                                  compute_loss=compute_loss,
+                                                 half_precision=amp_enabled,
                                                  is_coco=is_coco)
 
             # Write
@@ -852,8 +859,8 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                 ckpt = {'epoch': epoch,
                         'best_fitness': best_fitness,
                         'training_results': results_file.read_text(),
-                        'model': deepcopy(model.module if is_parallel(model) else model).half(),
-                        'ema': deepcopy(ema.ema).half(),
+                        'model': deepcopy(model.module if is_parallel(model) else model).half() if amp_enabled else deepcopy(model.module if is_parallel(model) else model),
+                        'ema': deepcopy(ema.ema).half() if amp_enabled else deepcopy(ema.ema),
                         'updates': ema.updates,
                         'optimizer': optimizer.state_dict(),
                         'wandb_id': wandb_logger.wandb_run.id if wandb_logger.wandb else None}
@@ -887,11 +894,12 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
                                           imgsz=imgsz_test,
                                           conf_thres=0.001,
                                           iou_thres=0.7,
-                                          model=attempt_load(m, device).half(),
+                                          model=attempt_load(m, device).half() if amp_enabled else attempt_load(m, device),
                                           single_cls=opt.single_cls,
                                           dataloader=testloader,
                                           save_dir=save_dir,
                                           save_json=True,
+                                          half_precision=amp_enabled,
                                           plots=False,
                                           is_coco=is_coco)
 
@@ -899,7 +907,7 @@ def train_rgb_ir(hyp, opt, device, tb_writer=None):
         final = best if best.exists() else last  # final model
         for f in last, best:
             if f.exists():
-                strip_optimizer(f)  # strip optimizers
+                strip_optimizer(f, half=amp_enabled)  # strip optimizers
         if opt.bucket:
             os.system(f'gsutil cp {final} gs://{opt.bucket}/weights')  # upload
         if wandb_logger.wandb and not opt.evolve:  # Log the stripped model
@@ -918,7 +926,7 @@ def effective_seed(seed, rank):
     return seed if rank == -1 else seed + rank + 1
 
 
-def save_checkpoint(path, model, ema, optimizer, epoch, best_fitness, training_results='', wandb_id=None):
+def save_checkpoint(path, model, ema, optimizer, epoch, best_fitness, training_results='', wandb_id=None, amp_enabled=True):
     """Save a training checkpoint using the same structure as regular epoch checkpoints."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -926,8 +934,8 @@ def save_checkpoint(path, model, ema, optimizer, epoch, best_fitness, training_r
         'epoch': epoch,
         'best_fitness': best_fitness,
         'training_results': training_results,
-        'model': deepcopy(model.module if is_parallel(model) else model).half(),
-        'ema': deepcopy(ema.ema).half() if ema else None,
+        'model': deepcopy(model.module if is_parallel(model) else model).half() if amp_enabled else deepcopy(model.module if is_parallel(model) else model),
+        'ema': deepcopy(ema.ema).half() if amp_enabled and ema else deepcopy(ema.ema) if ema else None,
         'updates': ema.updates if ema else 0,
         'optimizer': optimizer.state_dict(),
         'wandb_id': wandb_id,
@@ -944,6 +952,7 @@ def parse_opt(args=None):
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
+    parser.add_argument('--amp', action='store_true', default=True, help='enable CUDA automatic mixed precision')
     parser.add_argument('--batch-size', type=int, default=8, help='total batch size for all GPUs')
     parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
