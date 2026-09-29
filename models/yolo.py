@@ -90,6 +90,14 @@ class Model(nn.Module):
             with open(cfg, encoding='ascii', errors='ignore') as f:
                 self.yaml = yaml.safe_load(f)  # model dict
 
+        self.backbone_mode = self.yaml.get('backbone_mode', 'dual')
+        supported_modes = ('dual', 'shared_batch')
+        if not isinstance(self.backbone_mode, str) or self.backbone_mode not in supported_modes:
+            raise ValueError(
+                f"Unsupported backbone_mode {self.backbone_mode!r}; "
+                f"expected one of {supported_modes}."
+            )
+
         # Define model
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels
         if nc and nc != self.yaml['nc']:
@@ -143,6 +151,34 @@ class Model(nn.Module):
         y = self._clip_augmented(y)  # clip augmented tails
         return torch.cat(y, 1), None  # augmented inference, train
 
+    @staticmethod
+    def _merge_shared_batch_inputs(x, x2):
+        if not isinstance(x, torch.Tensor) or not isinstance(x2, torch.Tensor):
+            raise ValueError("shared_batch mode expects tensor RGB and IR inputs.")
+        if x.ndim != 4 or x2.ndim != 4:
+            raise ValueError(
+                "shared_batch mode expects 4-D BCHW inputs, "
+                f"got {x.ndim}-D and {x2.ndim}-D."
+            )
+        if x.shape != x2.shape:
+            raise ValueError(
+                "shared_batch mode expects RGB and IR inputs with the same shape, "
+                f"got {tuple(x.shape)} and {tuple(x2.shape)}."
+            )
+        if x.device != x2.device:
+            raise ValueError(
+                "shared_batch mode expects RGB and IR inputs on the same device, "
+                f"got {x.device} and {x2.device}."
+            )
+        if x.dtype != x2.dtype:
+            raise ValueError(
+                "shared_batch mode expects RGB and IR inputs with the same dtype, "
+                f"got {x.dtype} and {x2.dtype}."
+            )
+        if x.shape[0] == 0:
+            raise ValueError("shared_batch mode expects a non-empty batch.")
+        return torch.cat((x, x2), dim=0)
+
     def _forward_once(self, x, x2, profile=False, visualize=False):
         """
 
@@ -151,6 +187,9 @@ class Model(nn.Module):
         :param profile:
         :return:
         """
+        # Older pickled dual-stream models do not have backbone_mode.
+        if getattr(self, 'backbone_mode', 'dual') == 'shared_batch':
+            x = self._merge_shared_batch_inputs(x, x2)
         y, dt = [], []  # outputs
         i = 0
         for m in self.model:
@@ -292,6 +331,10 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         elif m is Add2:
             c2 = ch[f[0]]
             args = [c2, args[1]]
+        elif m is BatchSplit:
+            if not isinstance(f, int):
+                raise ValueError(f'BatchSplit expects one feature-layer index, but got {f}')
+            c2 = ch[f]
         elif m is Select:
             if not isinstance(f, int):
                 raise ValueError(f'Select expects one fusion-output layer index, but got {f}')

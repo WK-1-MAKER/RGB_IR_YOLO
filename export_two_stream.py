@@ -86,7 +86,7 @@ class ExportInterpolate(nn.Module):
 
 def parse_opt(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--weights", type=str, default="runs/train/exp7/weights/best.pt")
+    parser.add_argument("--weights", type=str, default="runs/train/exp/weights/best.pt")
     parser.add_argument("--img-size", nargs="+", type=int, default=[640, 640])
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--device", default="0")
@@ -136,7 +136,7 @@ def export_onnx(opt):
     model = load_model_for_export(opt.weights, map_location=device)
     target_dtype = resolve_export_dtype(model, opt.dtype)
     model = fuse_model_for_export(model, target_dtype)
-    print(f"Export dtype: {target_dtype}")
+    print(f"Export dtype: {target_dtype}, ONNX opset: 16")
 
     gs = int(max(model.stride))
     opt.img_size = [check_img_size(x, gs) for x in opt.img_size]
@@ -155,14 +155,14 @@ def export_onnx(opt):
         (img_rgb, img_ir),
         out_path,
         verbose=False,
-        opset_version=13,
+        opset_version=16,
         input_names=["images_rgb", "images_ir"],
         output_names=["output"],
         dynamic_axes=build_dynamic_axes(opt.dynamic),
     )
 
     model_onnx = onnx.load(out_path)
-    onnx.checker.check_model(model_onnx)
+    onnx.checker.check_model(model_onnx, full_check=True)
 
     if opt.simplify:
         check_requirements(["onnx-simplifier"])
@@ -170,6 +170,9 @@ def export_onnx(opt):
 
         model_onnx, check = onnxsim.simplify(
             model_onnx,
+            # Constant folding fails on this FP16/opset-16 graph in the current
+            # onnxsim/ONNX Runtime environment; retain the other graph optimizations.
+            skip_constant_folding=True,
             dynamic_input_shape=opt.dynamic,
             input_shapes={
                 "images_rgb": list(img_rgb.shape),
@@ -177,6 +180,7 @@ def export_onnx(opt):
             } if opt.dynamic else None,
         )
         assert check, "assert check failed"
+        onnx.checker.check_model(model_onnx, full_check=True)
         onnx.save(model_onnx, out_path)
 
     print(f"ONNX export success: {out_path} ({file_size(out_path):.1f} MB) in {time.time() - t:.2f}s")

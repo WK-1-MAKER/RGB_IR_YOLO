@@ -2,8 +2,8 @@
 python train.py 
 
 # 导出onnx
-python models/export.py \
-    --weights yolov8n.pt \
+python export_two_stream.py \
+    --weights runs/train/exp2/weights/best.pt \
     --simplify \
     --dtype auto
 

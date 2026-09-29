@@ -267,6 +267,22 @@ class Select(nn.Module):
         return x[self.index]
 
 
+class BatchSplit(nn.Module):
+    """Split a merged RGB/IR batch into two equally sized streams."""
+
+    def forward(self, x):
+        if not isinstance(x, torch.Tensor):
+            raise ValueError(f"BatchSplit expects a tensor, got {type(x).__name__}.")
+        if x.ndim != 4:
+            raise ValueError(f"BatchSplit expects a 4-D BCHW tensor, got {x.ndim}-D.")
+        if x.shape[0] == 0 or x.shape[0] % 2 != 0:
+            raise ValueError(
+                "BatchSplit expects a non-empty even batch size, "
+                f"got shape {tuple(x.shape)}."
+            )
+        return x.chunk(2, dim=0)
+
+
 class AIFIConv(nn.Module):
     """Lightweight two-stream fusion: concat, 1x1 conv, split into two residual deltas."""
 
@@ -290,8 +306,9 @@ class AIFIConv(nn.Module):
 
 def _normalized_token_center_coordinates(h, w, device, dtype):
     """Return row-major normalized (x, y) center coordinates for an HxW feature map."""
-    rows = (torch.arange(h, device=device, dtype=dtype) + 0.5) / h
-    cols = (torch.arange(w, device=device, dtype=dtype) + 0.5) / w
+    # ONNX Range does not support FP16; cast integer indices before arithmetic.
+    rows = (torch.arange(h, device=device).to(dtype=dtype) + 0.5) / h
+    cols = (torch.arange(w, device=device).to(dtype=dtype) + 0.5) / w
     yy, xx = torch.meshgrid(rows, cols, indexing="ij")
     return torch.stack((xx, yy), dim=-1).reshape(1, h * w, 2)
 
